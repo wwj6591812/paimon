@@ -56,6 +56,12 @@ public class StaticFromSnapshotStartingScanner extends AbstractStartingScanner {
             return new NoSnapshot();
         }
 
+        LOG.info(
+                "startingSnapshotId is {}, earliestSnapshotId is {}, latestSnapshotId is {}.",
+                startingSnapshotId,
+                earliestSnapshotId,
+                latestSnapshotId);
+
         // Checks earlier whether the specified scan snapshot id is valid and throws the correct
         // exception.
         checkArgument(
