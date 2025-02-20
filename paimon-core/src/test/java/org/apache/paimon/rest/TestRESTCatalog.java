@@ -200,11 +200,11 @@ public class TestRESTCatalog extends FileSystemCatalog {
     }
 
     @Override
-    protected void dropTableImpl(Identifier identifier) {
+    protected void dropTableImpl(Identifier identifier, List<Path> externalPaths) {
         if (tableFullName2Schema.containsKey(identifier.getFullName())) {
             tableFullName2Schema.remove(identifier.getFullName());
         } else {
-            super.dropTableImpl(identifier);
+            super.dropTableImpl(identifier, externalPaths);
         }
     }
 
