@@ -778,6 +778,7 @@ public class TestFileStore extends KeyValueFileStore {
         private final TableSchema tableSchema;
 
         private CoreOptions.ChangelogProducer changelogProducer;
+        private Boolean pkTableLimitPushDownEnabled;
 
         public Builder(
                 String format,
@@ -800,10 +801,16 @@ public class TestFileStore extends KeyValueFileStore {
             this.tableSchema = tableSchema;
 
             this.changelogProducer = CoreOptions.ChangelogProducer.NONE;
+            this.pkTableLimitPushDownEnabled = null; // Use default from CoreOptions
         }
 
         public Builder changelogProducer(CoreOptions.ChangelogProducer changelogProducer) {
             this.changelogProducer = changelogProducer;
+            return this;
+        }
+
+        public Builder pkTableLimitPushDownEnabled(boolean enabled) {
+            this.pkTableLimitPushDownEnabled = enabled;
             return this;
         }
 
@@ -828,6 +835,10 @@ public class TestFileStore extends KeyValueFileStore {
 
             // disable dynamic-partition-overwrite in FileStoreCommit layer test
             conf.set(CoreOptions.DYNAMIC_PARTITION_OVERWRITE, false);
+
+            if (pkTableLimitPushDownEnabled != null) {
+                conf.set(CoreOptions.PK_TABLE_LIMIT_PUSH_DOWN_ENABLED, pkTableLimitPushDownEnabled);
+            }
 
             return new TestFileStore(
                     root,

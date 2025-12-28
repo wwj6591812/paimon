@@ -2102,6 +2102,16 @@ public class CoreOptions implements Serializable {
                     .withDescription(
                             "Whether to try upgrading the data files after overwriting a primary key table.");
 
+    public static final ConfigOption<Boolean> PK_TABLE_LIMIT_PUSH_DOWN_ENABLED =
+            key("pk-table-limit-push-down.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to enable limit pushdown for primary key tables. "
+                                    + "If enabled, paimon will determine whether to push down the limit "
+                                    + "based on the table's merge engine type, file overlapping status, "
+                                    + "deletion vectors, and delete rows, which can further reduce the number of splits.");
+
     private final Options options;
 
     public CoreOptions(Map<String, String> options) {
@@ -3046,6 +3056,10 @@ public class CoreOptions implements Serializable {
 
     public boolean commitDiscardDuplicateFiles() {
         return options.get(COMMIT_DISCARD_DUPLICATE_FILES);
+    }
+
+    public boolean pkTableLimitPushDownEnabled() {
+        return options.get(PK_TABLE_LIMIT_PUSH_DOWN_ENABLED);
     }
 
     private Map<String, String> callbacks(

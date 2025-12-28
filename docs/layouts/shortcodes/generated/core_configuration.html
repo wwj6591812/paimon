@@ -1002,6 +1002,12 @@ This config option does not affect the default filesystem metastore.</td>
             <td>You can specify a pattern to get a timestamp from partitions. The formatter pattern is defined by 'partition.timestamp-formatter'.<ul><li>By default, read from the first field.</li><li>If the timestamp in the partition is a single field called 'dt', you can use '$dt'.</li><li>If it is spread across multiple fields for year, month, day, and hour, you can use '$year-$month-$day $hour:00:00'.</li><li>If the timestamp is in fields dt and hour, you can use '$dt $hour:00:00'.</li></ul></td>
         </tr>
         <tr>
+            <td><h5>pk-table-limit-push-down.enabled</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Whether to enable limit pushdown for primary key tables. If enabled, paimon will determine whether to push down the limit based on the table's merge engine type, file overlapping status, deletion vectors, and delete rows, which can further reduce the number of splits.</td>
+        </tr>
+        <tr>
             <td><h5>postpone.batch-write-fixed-bucket</h5></td>
             <td style="word-wrap: break-word;">true</td>
             <td>Boolean</td>
