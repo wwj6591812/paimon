@@ -23,7 +23,7 @@
     <parent>
         <groupId>org.apache.paimon</groupId>
         <artifactId>paimon-filesystems</artifactId>
-        <version>1.4-SNAPSHOT</version>
+        <version>1.4-f56894d9-20260116-165091-SNAPSHOT</version>
     </parent>
 
     <artifactId>paimon-obs</artifactId>
