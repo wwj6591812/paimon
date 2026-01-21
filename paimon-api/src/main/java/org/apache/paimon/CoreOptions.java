@@ -1158,6 +1158,25 @@ public class CoreOptions implements Serializable {
                                                     + " avoid the disorder reading for partitions, you can open this option.")
                                     .build());
 
+    public static final ConfigOption<Boolean> SCAN_APPEND_LIMIT_PUSHDOWN_ENABLED =
+            key("scan.append.limit-pushdown-enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Whether to enable limit pushdown for append-only tables. When enabled, the limit"
+                                                    + " will be pushed down to the manifest entry reading phase, allowing early"
+                                                    + " termination when the limit is reached. This can significantly improve"
+                                                    + " performance for queries with small limits by avoiding reading all manifest"
+                                                    + " entries.")
+                                    .linebreak()
+                                    .text(
+                                            "When this option is enabled, sequential manifest reading mode will be used"
+                                                    + " (useSequential = true) to support early termination. This may slightly"
+                                                    + " reduce parallelism but provides better performance for limit queries.")
+                                    .build());
+
     @Immutable
     public static final ConfigOption<String> PRIMARY_KEY =
             key("primary-key")

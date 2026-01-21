@@ -25,7 +25,7 @@ under the License.
     <parent>
         <artifactId>paimon-parent</artifactId>
         <groupId>org.apache.paimon</groupId>
-        <version>1.4-f56894d9-20260116-165091-SNAPSHOT</version>
+        <version>1.4-limit-20260120-165091-SNAPSHOT</version>
     </parent>
 
     <artifactId>paimon-vfs</artifactId>

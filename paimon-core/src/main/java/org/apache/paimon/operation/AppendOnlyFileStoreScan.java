@@ -19,9 +19,11 @@
 package org.apache.paimon.operation;
 
 import org.apache.paimon.AppendOnlyFileStore;
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.fileindex.FileIndexPredicate;
 import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.manifest.ManifestFile;
+import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
@@ -34,8 +36,10 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -48,6 +52,7 @@ public class AppendOnlyFileStoreScan extends AbstractFileStoreScan {
 
     private final boolean fileIndexReadEnabled;
     private final boolean deletionVectorsEnabled;
+    private final boolean limitPushdownEnabled;
 
     protected Predicate inputFilter;
 
@@ -79,12 +84,35 @@ public class AppendOnlyFileStoreScan extends AbstractFileStoreScan {
                 new SimpleStatsEvolutions(sid -> scanTableSchema(sid).fields(), schema.id());
         this.fileIndexReadEnabled = fileIndexReadEnabled;
         this.deletionVectorsEnabled = deletionVectorsEnabled;
+        CoreOptions coreOptions = new CoreOptions(schema.options());
+        this.limitPushdownEnabled =
+                coreOptions.toConfiguration().get(CoreOptions.SCAN_APPEND_LIMIT_PUSHDOWN_ENABLED);
     }
 
     public AppendOnlyFileStoreScan withFilter(Predicate predicate) {
         this.inputFilter = predicate;
         this.bucketSelectConverter.convert(predicate).ifPresent(this::withTotalAwareBucketFilter);
         return this;
+    }
+
+    @Override
+    protected Iterator<ManifestEntry> readManifestEntries(
+            List<ManifestFileMeta> manifests, boolean useSequential) {
+        // Override to use sequential mode when limit pushdown is enabled
+        boolean shouldUseSequential =
+                limitPushdownEnabled && limit != null && limit > 0 && !deletionVectorsEnabled
+                        ? true
+                        : useSequential;
+
+        Iterator<ManifestEntry> iterator =
+                super.readManifestEntries(manifests, shouldUseSequential);
+
+        // Apply limit at iterator level if limit pushdown is enabled
+        if (limitPushdownEnabled && limit != null && limit > 0 && !deletionVectorsEnabled) {
+            iterator = new LimitIterator(iterator, limit);
+        }
+
+        return iterator;
     }
 
     @Override
@@ -105,6 +133,48 @@ public class AppendOnlyFileStoreScan extends AbstractFileStoreScan {
             }
         }
         return result;
+    }
+
+    /**
+     * Iterator that applies limit by accumulating row counts and stopping when limit is reached.
+     * This allows early termination when reading manifest entries sequentially.
+     */
+    private class LimitIterator implements Iterator<ManifestEntry> {
+        private final Iterator<ManifestEntry> delegate;
+        private final long limit;
+        private long accumulatedRowCount = 0;
+        private ManifestEntry next = null;
+
+        LimitIterator(Iterator<ManifestEntry> delegate, long limit) {
+            this.delegate = delegate;
+            this.limit = limit;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (accumulatedRowCount >= limit) {
+                return false;
+            }
+            if (next != null) {
+                return true;
+            }
+            if (!delegate.hasNext()) {
+                return false;
+            }
+            next = delegate.next();
+            accumulatedRowCount += next.file().rowCount();
+            return true;
+        }
+
+        @Override
+        public ManifestEntry next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            ManifestEntry result = next;
+            next = null;
+            return result;
+        }
     }
 
     /** Note: Keep this thread-safe. */
