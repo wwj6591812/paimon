@@ -30,8 +30,8 @@ const config = {
   },
 
   customFields: {
-    version: '1.5-SNAPSHOT',
-    versionTitle: '1.5-SNAPSHOT',
+    version: '1.5-58ed52a4-20260602-165091-SNAPSHOT',
+    versionTitle: '1.5-58ed52a4-20260602-165091-SNAPSHOT',
     branch: 'master',
     flinkVersion: '1.20',
     isStable: false,
@@ -122,10 +122,10 @@ const config = {
         items: [
           {
             type: 'dropdown',
-            label: '1.5-SNAPSHOT',
+            label: '1.5-58ed52a4-20260602-165091-SNAPSHOT',
             position: 'right',
             items: [
-              {label: 'master (1.5-SNAPSHOT)', href: 'https://paimon.apache.org/docs/master'},
+              {label: 'master (1.5-58ed52a4-20260602-165091-SNAPSHOT)', href: 'https://paimon.apache.org/docs/master'},
               {label: '1.4 (stable)', href: 'https://paimon.apache.org/docs/1.4'},
               {label: '1.3', href: 'https://paimon.apache.org/docs/1.3'},
               {label: '1.2', href: 'https://paimon.apache.org/docs/1.2'},
