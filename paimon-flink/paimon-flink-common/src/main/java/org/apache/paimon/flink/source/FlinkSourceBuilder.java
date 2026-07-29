@@ -356,12 +356,13 @@ public class FlinkSourceBuilder {
             throw new IllegalArgumentException(
                     "Cannot limit streaming source, please use batch execution mode.");
         }
+        ReadBuilder readBuilder = createReadBuilder(projectedRowType());
         dataStream =
                 MonitorSource.buildSource(
                         env,
                         sourceName,
                         produceTypeInfo(),
-                        createReadBuilder(projectedRowType()),
+                        readBuilder,
                         conf.get(CoreOptions.CONTINUOUS_DISCOVERY_INTERVAL).toMillis(),
                         watermarkStrategy == null,
                         conf.get(FlinkConnectorOptions.READ_SHUFFLE_BUCKET_WITH_PARTITION),
@@ -369,7 +370,9 @@ public class FlinkSourceBuilder {
                         outerProject(),
                         isBounded,
                         limit,
-                        table);
+                        table,
+                        readBuilder.readType(),
+                        conf.get(CoreOptions.BLOB_AS_DESCRIPTOR));
         if (parallelism != null) {
             dataStream.getTransformation().setParallelism(parallelism);
         }
