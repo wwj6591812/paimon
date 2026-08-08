@@ -24,7 +24,8 @@ import org.apache.paimon.data.serializer.BinaryRowSerializer;
 import org.apache.paimon.data.serializer.InternalRowSerializer;
 import org.apache.paimon.data.serializer.InternalSerializers;
 import org.apache.paimon.lookup.ValueState;
-import org.apache.paimon.lookup.local.LocalKvStateFactory;
+import org.apache.paimon.lookup.rocksdb.RocksDBOptions;
+import org.apache.paimon.lookup.rocksdb.RocksDBStateFactory;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.types.RowType;
@@ -38,12 +39,12 @@ import javax.annotation.Nullable;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import static org.apache.paimon.CoreOptions.LOOKUP_CACHE_ROWS;
 import static org.apache.paimon.table.query.GlobalIndexQueryServiceUtils.normalizeKey;
 import static org.apache.paimon.table.query.GlobalIndexQueryServiceUtils.querySpec;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -74,10 +75,10 @@ public class DataEvolutionGlobalIndexTableQuery implements TableQuery {
     private final int[] valueProjection;
     private final ReadWriteLock lock;
 
-    @Nullable private LocalKvStateFactory activeStateFactory;
+    @Nullable private RocksDBStateFactory activeStateFactory;
     @Nullable private ValueState<BinaryRow, BinaryRow> activeState;
     @Nullable private File activeStatePath;
-    @Nullable private LocalKvStateFactory buildingStateFactory;
+    @Nullable private RocksDBStateFactory buildingStateFactory;
     @Nullable private ValueState<BinaryRow, BinaryRow> buildingState;
     @Nullable private File buildingStatePath;
     private long latestGeneration;
@@ -130,15 +131,15 @@ public class DataEvolutionGlobalIndexTableQuery implements TableQuery {
             Options options = table.coreOptions().toConfiguration();
             this.buildingStatePath = new File(stateRoot, "generation-" + generation);
             FileIOUtils.deleteDirectoryQuietly(buildingStatePath);
+            Files.createDirectories(buildingStatePath.toPath());
             this.buildingStateFactory =
-                    new LocalKvStateFactory(
-                            buildingStatePath.toString(), options, null, null, false);
+                    new RocksDBStateFactory(buildingStatePath.toString(), options, null);
             this.buildingState =
                     buildingStateFactory.valueState(
                             "global-index-query",
                             keySerializer,
                             new BinaryRowSerializer(valueSerializer.getArity()),
-                            options.get(LOOKUP_CACHE_ROWS));
+                            options.get(RocksDBOptions.LOOKUP_CACHE_ROWS));
         } finally {
             lock.writeLock().unlock();
         }
@@ -187,7 +188,7 @@ public class DataEvolutionGlobalIndexTableQuery implements TableQuery {
                     !buildingOversizedValueDetected,
                     "An oversized projected value prevents generation %s from becoming ready.",
                     generation);
-            LocalKvStateFactory oldStateFactory = activeStateFactory;
+            RocksDBStateFactory oldStateFactory = activeStateFactory;
             File oldStatePath = activeStatePath;
             activeStateFactory = buildingStateFactory;
             activeState = buildingState;
@@ -356,7 +357,7 @@ public class DataEvolutionGlobalIndexTableQuery implements TableQuery {
 
     private void closeActiveState() throws IOException {
         activeState = null;
-        LocalKvStateFactory stateFactory = activeStateFactory;
+        RocksDBStateFactory stateFactory = activeStateFactory;
         File statePath = activeStatePath;
         activeStateFactory = null;
         activeStatePath = null;
@@ -372,7 +373,7 @@ public class DataEvolutionGlobalIndexTableQuery implements TableQuery {
     }
 
     private void closeOldActiveState(
-            @Nullable LocalKvStateFactory oldStateFactory, @Nullable File oldStatePath) {
+            @Nullable RocksDBStateFactory oldStateFactory, @Nullable File oldStatePath) {
         try {
             if (oldStateFactory != null) {
                 oldStateFactory.close();
@@ -389,7 +390,7 @@ public class DataEvolutionGlobalIndexTableQuery implements TableQuery {
 
     private void closeBuildingState() throws IOException {
         buildingState = null;
-        LocalKvStateFactory stateFactory = buildingStateFactory;
+        RocksDBStateFactory stateFactory = buildingStateFactory;
         File statePath = buildingStatePath;
         buildingStateFactory = null;
         buildingStatePath = null;

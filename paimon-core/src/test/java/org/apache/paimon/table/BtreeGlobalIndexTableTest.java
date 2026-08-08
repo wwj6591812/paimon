@@ -259,7 +259,7 @@ public class BtreeGlobalIndexTableTest extends DataEvolutionTestBase {
         table = (FileStoreTable) catalog.getTable(identifier());
         assertThat(exactCoverage(table, 1)).isFalse();
 
-        createIndexIncremental("f1");
+        createIndex("f1", Collections.singletonList(new Range(100, 199)));
         table = (FileStoreTable) catalog.getTable(identifier());
         assertThat(exactCoverage(table, 1)).isTrue();
     }
@@ -437,12 +437,7 @@ public class BtreeGlobalIndexTableTest extends DataEvolutionTestBase {
                 table.store().newIndexFileHandler().scan(snapshot, "btree").stream()
                         .map(IndexManifestEntry::indexFile)
                         .collect(Collectors.toList());
-        return new DataEvolutionGlobalIndexCoverage(
-                        table,
-                        snapshot,
-                        PartitionPredicate.ALWAYS_TRUE,
-                        indexFiles,
-                        CoreOptions.GlobalIndexSearchMode.FAST)
+        return new GlobalIndexCoverage(table, snapshot, PartitionPredicate.ALWAYS_TRUE, indexFiles)
                 .isFullyCovered(fieldId);
     }
 

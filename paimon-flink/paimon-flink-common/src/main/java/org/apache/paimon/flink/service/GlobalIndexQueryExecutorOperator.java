@@ -45,6 +45,7 @@ import java.net.InetSocketAddress;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import static org.apache.paimon.flink.service.GlobalIndexQueryBootstrapOperator.COMPLETE;
@@ -71,6 +72,7 @@ public class GlobalIndexQueryExecutorOperator extends AbstractStreamOperator<Int
     private transient boolean[] completedBootstraps;
     private transient String serverEpoch;
     private transient String servedSnapshotUuid;
+    private transient String targetSnapshotUuid;
 
     private long generation = Long.MIN_VALUE;
     private long snapshotId = GlobalIndexQueryServiceUtils.EMPTY_SNAPSHOT_ID;
@@ -151,6 +153,7 @@ public class GlobalIndexQueryExecutorOperator extends AbstractStreamOperator<Int
         this.address = server.getServerAddress();
         this.completedBootstraps = new boolean[numBootstraps];
         this.servedSnapshotUuid = null;
+        this.targetSnapshotUuid = null;
     }
 
     @Override
@@ -163,9 +166,11 @@ public class GlobalIndexQueryExecutorOperator extends AbstractStreamOperator<Int
 
         long eventSnapshotId = row.getLong(1);
         int type = row.getInt(2);
+        String eventSnapshotUuid = row.isNullAt(8) ? null : row.getString(8).toString();
         if (eventGeneration > generation) {
             generation = eventGeneration;
             snapshotId = eventSnapshotId;
+            targetSnapshotUuid = eventSnapshotUuid;
             Arrays.fill(completedBootstraps, false);
             publishedReady = false;
             invalidReason = null;
@@ -178,6 +183,12 @@ public class GlobalIndexQueryExecutorOperator extends AbstractStreamOperator<Int
             // descriptor here prevents a client from discovering a partially swapped generation.
             // Clients which cached the previous descriptor are fenced by servedGeneration.
             emitAddress(false, type == NOT_READY ? row.getString(7).toString() : "Refreshing");
+        } else if (eventSnapshotId != snapshotId
+                || !Objects.equals(eventSnapshotUuid, targetSnapshotUuid)) {
+            throw new IllegalStateException(
+                    "Global-index bootstrap mixed snapshot identities in generation "
+                            + generation
+                            + '.');
         }
 
         if (type == START || type == NOT_READY) {
@@ -219,10 +230,7 @@ public class GlobalIndexQueryExecutorOperator extends AbstractStreamOperator<Int
             completedBootstraps[bootstrapId] = true;
             if (!publishedReady && allBootstrapsComplete()) {
                 query.finishRefresh(generation);
-                servedSnapshotUuid =
-                        query.servedSnapshotId() == GlobalIndexQueryServiceUtils.EMPTY_SNAPSHOT_ID
-                                ? null
-                                : table.snapshotManager().snapshot(query.servedSnapshotId()).uuid();
+                servedSnapshotUuid = targetSnapshotUuid;
                 publishedReady = true;
                 emitAddress(true, "");
             }

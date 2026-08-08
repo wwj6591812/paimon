@@ -90,6 +90,7 @@ public class GlobalIndexQueryBootstrapOperator extends AbstractStreamOperator<In
                 DataTypes.INT(),
                 DataTypes.BYTES(),
                 DataTypes.BYTES(),
+                DataTypes.STRING(),
                 DataTypes.STRING());
     }
 
@@ -120,18 +121,37 @@ public class GlobalIndexQueryBootstrapOperator extends AbstractStreamOperator<In
         long snapshotId = event.getLong(1);
         int monitorType = event.getInt(2);
         String reason = event.getString(5).toString();
+        String snapshotIdentity = event.isNullAt(6) ? null : event.getString(6).toString();
         int bootstrapId = RuntimeContextUtils.getIndexOfThisSubtask(getRuntimeContext());
 
         if (monitorType == GlobalIndexQuerySnapshotMonitor.NOT_READY) {
             for (int target = 0; target < numExecutors; target++) {
-                emit(generation, snapshotId, NOT_READY, target, bootstrapId, null, null, reason);
+                emit(
+                        generation,
+                        snapshotId,
+                        NOT_READY,
+                        target,
+                        bootstrapId,
+                        null,
+                        null,
+                        reason,
+                        snapshotIdentity);
             }
             return;
         }
         if (monitorType == GlobalIndexQuerySnapshotMonitor.START) {
             // Every target observes START before any PUT from this input channel.
             for (int target = 0; target < numExecutors; target++) {
-                emit(generation, snapshotId, START, target, bootstrapId, null, null, "");
+                emit(
+                        generation,
+                        snapshotId,
+                        START,
+                        target,
+                        bootstrapId,
+                        null,
+                        null,
+                        "",
+                        snapshotIdentity);
             }
             return;
         }
@@ -160,14 +180,24 @@ public class GlobalIndexQueryBootstrapOperator extends AbstractStreamOperator<In
                             bootstrapId,
                             serializeBinaryRow(key),
                             serializeBinaryRow(value),
-                            "");
+                            "",
+                            snapshotIdentity);
                 }
             }
             return;
         }
         if (monitorType == GlobalIndexQuerySnapshotMonitor.COMPLETE) {
             for (int target = 0; target < numExecutors; target++) {
-                emit(generation, snapshotId, COMPLETE, target, bootstrapId, null, null, "");
+                emit(
+                        generation,
+                        snapshotId,
+                        COMPLETE,
+                        target,
+                        bootstrapId,
+                        null,
+                        null,
+                        "",
+                        snapshotIdentity);
             }
             return;
         }
@@ -183,7 +213,8 @@ public class GlobalIndexQueryBootstrapOperator extends AbstractStreamOperator<In
             int bootstrapId,
             byte[] key,
             byte[] value,
-            String message) {
+            String message,
+            String snapshotIdentity) {
         output.collect(
                 new StreamRecord<>(
                         GenericRow.of(
@@ -194,6 +225,9 @@ public class GlobalIndexQueryBootstrapOperator extends AbstractStreamOperator<In
                                 bootstrapId,
                                 key,
                                 value,
-                                BinaryString.fromString(message))));
+                                BinaryString.fromString(message),
+                                snapshotIdentity == null
+                                        ? null
+                                        : BinaryString.fromString(snapshotIdentity))));
     }
 }

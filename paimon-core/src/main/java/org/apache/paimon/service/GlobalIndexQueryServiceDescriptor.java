@@ -33,9 +33,11 @@ import java.util.Objects;
  * Versioned discovery descriptor for one materialized global-index generation.
  *
  * <p>For a ready descriptor, {@code servedGeneration}, {@code servedSnapshotId}, and {@code
- * snapshotUuid} fence the snapshot accepted by the endpoints. For a not-ready descriptor, the
- * generation and snapshot identify the target which has been fenced and acknowledged; no snapshot
- * is served and the endpoint set is empty.
+ * snapshotUuid} fence the snapshot accepted by the endpoints. The field name is retained for wire
+ * compatibility; releases without {@code Snapshot.uuid()} publish a query-service-private SHA-256
+ * identity of the exact snapshot-file bytes. For a not-ready descriptor, the generation and
+ * snapshot identify the target which has been fenced and acknowledged; no snapshot is served and
+ * the endpoint set is empty.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class GlobalIndexQueryServiceDescriptor implements Serializable {

@@ -104,7 +104,6 @@ class GlobalIndexQuerySnapshotMonitorTest {
         when(table.newSnapshotReader()).thenReturn(reader);
         when(reader.withMode(ScanMode.ALL)).thenReturn(reader);
         when(snapshot.id()).thenReturn(7L);
-        when(snapshot.uuid()).thenReturn("snapshot-7");
         when(reader.withSnapshot(snapshot)).thenReturn(reader);
         when(reader.withReadType(projectedType)).thenReturn(reader);
         when(reader.read()).thenReturn(plan);

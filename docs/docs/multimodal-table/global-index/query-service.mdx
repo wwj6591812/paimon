@@ -79,8 +79,8 @@ unambiguous. Clients can deserialize returned raw-BLOB bytes with `BlobDescripto
 and use the descriptor for range reads. A BLOB lookup key is not supported.
 
 The service rejects configurations that could turn incomplete data into a false miss, including
-`query-auth.enabled = true`, `scan.ignore-corrupt-files = true`,
-`scan.ignore-lost-files = true`, and `global-index.column-update-action = ignore`.
+`query-auth.enabled = true`, `scan.ignore-corrupt-files = true`, and
+`scan.ignore-lost-files = true`.
 
 ## Snapshot and readiness semantics
 
@@ -105,7 +105,7 @@ The contract is exact for the snapshot advertised in discovery and converges to 
 the monitor observes them. It is not an implicit read-after-write API: immediately after a writer
 commits, discovery may still advertise the previous complete snapshot. Use
 `GlobalIndexQueryClient.getValuesWithMetadata` to receive the values together with their
-`servedGeneration`, `servedSnapshotId`, and snapshot UUID. The existing `getValues` method is a
+`servedGeneration`, `servedSnapshotId`, and snapshot identity. The existing `getValues` method is a
 convenience projection of the same call. A gateway which requires a minimum committed snapshot must
 force-refresh its location and compare the returned `servedSnapshotId` before it accepts a MISS; if
 the advertised snapshot is older, it must treat the service as unavailable and retry later. The
@@ -113,8 +113,11 @@ current API does not perform catalog I/O or enforce a caller-supplied minimum sn
 batch.
 
 The discovery descriptor includes the table UUID and branch, protocol and key-hash versions, schema
-fingerprint, served snapshot ID, optional snapshot UUID, generation, and one address and server
-epoch per shard. Modern snapshots publish their UUID; historical snapshots without one are
+fingerprint, served snapshot ID, snapshot identity, generation, and one address and server epoch per
+shard. This release predates `Snapshot.uuid()`, so the wire field named `snapshotUuid` contains
+`sha256:<hex>` of the exact snapshot-file bytes. The monitor parses the same bytes that it hashes and
+propagates that identity through bootstrap to every executor. Reusing a snapshot ID with different
+bytes therefore advances the generation fence. Legacy descriptors without an identity are
 additionally fenced by table UUID, branch, owner, generation, and server epoch. The client includes
 the expected server epoch and generation in each request and validates the snapshot fence on every
 response. Protocol version 2 carries expected failures as normal, versioned response frames with a
@@ -182,7 +185,7 @@ from a listing is not supported by this v1 discovery layout.
 
 Each ready generation stores one copied projected value per non-null lookup key on local executor
 disk, plus lookup cache overhead. Refresh performs one full projected snapshot scan across all
-bootstrap subtasks. Lookup access to the current local KV implementation is serialized per
+bootstrap subtasks. Lookup access to the release-native local RocksDB state is serialized per
 executor because its codecs reuse mutable buffers. Increase parallelism to distribute keys and
 request load, while accounting for the full-scan shuffle and local state size.
 

@@ -19,6 +19,7 @@
 package org.apache.paimon.query;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
@@ -49,6 +50,26 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests versioned, snapshot-fenced global-index service discovery. */
 public class GlobalIndexQueryLocationTest extends TableTestBase {
+
+    @Test
+    public void testSameSnapshotIdWithDifferentBytesHasDifferentFenceIdentity() throws Exception {
+        FileStoreTable table = createTable();
+        write(table, GenericRow.of(BinaryString.fromString("object.jpg"), new byte[] {1, 2, 3}));
+        Snapshot snapshot = table.snapshotManager().latestSnapshot();
+
+        GlobalIndexQueryServiceUtils.SnapshotFile first =
+                GlobalIndexQueryServiceUtils.readSnapshotWithIdentity(table, snapshot.id());
+        String snapshotJson =
+                table.fileIO().readFileUtf8(table.snapshotManager().snapshotPath(snapshot.id()));
+        table.fileIO()
+                .overwriteFileUtf8(
+                        table.snapshotManager().snapshotPath(snapshot.id()), snapshotJson + " ");
+        GlobalIndexQueryServiceUtils.SnapshotFile second =
+                GlobalIndexQueryServiceUtils.readSnapshotWithIdentity(table, snapshot.id());
+
+        assertThat(first.snapshot().id()).isEqualTo(second.snapshot().id());
+        assertThat(first.identity()).startsWith("sha256:").isNotEqualTo(second.identity());
+    }
 
     @Test
     public void testWideProjectionUsesBoundedStableServiceId() {
@@ -107,8 +128,8 @@ public class GlobalIndexQueryLocationTest extends TableTestBase {
                 spec.serviceId(),
                 descriptor(table, spec, true, "", spec.schemaFingerprint(), addresses, epochs));
 
-        // Snapshot UUID was added after snapshot IDs. Legacy snapshots remain safely fenced by
-        // generation, server epoch and schema even when no UUID is available.
+        // The snapshot identity field remains nullable for legacy descriptors. They remain fenced
+        // by generation, server epoch and schema even when no identity is available.
         manager.resetGlobalIndexService(
                 spec.serviceId(),
                 new GlobalIndexQueryServiceDescriptor(

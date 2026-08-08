@@ -21,7 +21,8 @@ package org.apache.paimon.table.query;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.data.BinaryRow;
-import org.apache.paimon.globalindex.DataEvolutionGlobalIndexCoverage;
+import org.apache.paimon.fs.SeekableInputStream;
+import org.apache.paimon.globalindex.GlobalIndexCoverage;
 import org.apache.paimon.globalindex.btree.BTreeGlobalIndexerFactory;
 import org.apache.paimon.index.GlobalIndexMeta;
 import org.apache.paimon.index.IndexFileMeta;
@@ -36,6 +37,9 @@ import org.apache.paimon.types.RowType;
 
 import javax.annotation.Nullable;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -45,8 +49,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
-import static org.apache.paimon.CoreOptions.GlobalIndexColumnUpdateAction.IGNORE;
-import static org.apache.paimon.CoreOptions.GlobalIndexSearchMode.FAST;
 import static org.apache.paimon.catalog.Identifier.DEFAULT_MAIN_BRANCH;
 import static org.apache.paimon.service.ServiceManager.globalIndexLookupService;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -80,10 +82,6 @@ public final class GlobalIndexQueryServiceUtils {
         checkArgument(
                 options.rowTrackingEnabled() && options.dataEvolutionEnabled(),
                 "Global-index query service requires row-tracking.enabled=true and data-evolution.enabled=true.");
-        checkArgument(
-                options.globalIndexColumnUpdateAction() != IGNORE
-                        && persistedOptions.globalIndexColumnUpdateAction() != IGNORE,
-                "Global-index query service does not support global-index.column-update-action=IGNORE because it can return false misses.");
         checkArgument(
                 !options.queryAuthEnabled() && !persistedOptions.queryAuthEnabled(),
                 "Global-index query service does not support persisted or dynamic query-auth.enabled because its materialized state is shared by all clients.");
@@ -220,8 +218,7 @@ public final class GlobalIndexQueryServiceUtils {
                         .stream()
                         .map(IndexManifestEntry::indexFile)
                         .collect(Collectors.toList());
-        DataEvolutionGlobalIndexCoverage coverage =
-                new DataEvolutionGlobalIndexCoverage(table, snapshot, null, indexFiles, FAST);
+        GlobalIndexCoverage coverage = new GlobalIndexCoverage(table, snapshot, null, indexFiles);
         if (coverage.isFullyCovered(spec.lookupFieldId())) {
             // A snapshot with no live data files is complete without an index file.
             return SnapshotReadiness.ready(snapshot.id());
@@ -246,6 +243,81 @@ public final class GlobalIndexQueryServiceUtils {
         return meta != null
                 && meta.indexFieldId() == fieldId
                 && BTreeGlobalIndexerFactory.IDENTIFIER.equals(indexFile.indexType());
+    }
+
+    /**
+     * Query-service-private identity for a snapshot in releases which predate {@code
+     * Snapshot.uuid()}.
+     *
+     * <p>Hash the exact snapshot file instead of re-serializing the parsed object. Reusing a table
+     * path and snapshot ID with different bytes therefore advances the query-service fence even
+     * when the snapshot manager cache still contains the old parsed object.
+     */
+    public static SnapshotFile readSnapshotWithIdentity(FileStoreTable table, long snapshotId) {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available.", e);
+        }
+
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (SeekableInputStream input =
+                table.snapshotManager()
+                        .fileIO()
+                        .newInputStream(table.snapshotManager().snapshotPath(snapshotId))) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) {
+                    digest.update(buffer, 0, read);
+                    bytes.write(buffer, 0, read);
+                }
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(
+                    "Failed to read snapshot " + snapshotId + " for query-service identity.", e);
+        }
+        Snapshot snapshot =
+                Snapshot.fromJson(new String(bytes.toByteArray(), StandardCharsets.UTF_8));
+        checkArgument(
+                snapshot.id() == snapshotId,
+                "Snapshot file %s contains snapshot %s.",
+                snapshotId,
+                snapshot.id());
+        return new SnapshotFile(snapshot, "sha256:" + toHex(digest.digest()));
+    }
+
+    public static String snapshotIdentity(FileStoreTable table, long snapshotId) {
+        return readSnapshotWithIdentity(table, snapshotId).identity();
+    }
+
+    private static String toHex(byte[] digest) {
+        StringBuilder hex = new StringBuilder(digest.length * 2);
+        for (byte value : digest) {
+            hex.append(String.format("%02x", value & 0xff));
+        }
+        return hex.toString();
+    }
+
+    /** Exact parsed snapshot and the SHA-256 identity of the bytes from which it was parsed. */
+    public static final class SnapshotFile {
+
+        private final Snapshot snapshot;
+        private final String identity;
+
+        private SnapshotFile(Snapshot snapshot, String identity) {
+            this.snapshot = snapshot;
+            this.identity = identity;
+        }
+
+        public Snapshot snapshot() {
+            return snapshot;
+        }
+
+        public String identity() {
+            return identity;
+        }
     }
 
     /** Immutable validated query schema. */

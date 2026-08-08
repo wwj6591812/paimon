@@ -32,6 +32,7 @@ import org.apache.paimon.service.GlobalIndexQueryServiceDescriptor;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.query.GlobalIndexQueryServiceUtils;
 import org.apache.paimon.table.query.GlobalIndexQueryServiceUtils.QuerySpec;
+import org.apache.paimon.table.query.GlobalIndexQueryServiceUtils.SnapshotFile;
 import org.apache.paimon.table.query.GlobalIndexQueryServiceUtils.SnapshotReadiness;
 import org.apache.paimon.table.query.GlobalIndexQuerySnapshotLease;
 import org.apache.paimon.table.source.ScanMode;
@@ -116,6 +117,7 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
                 DataTypes.INT(),
                 DataTypes.INT(),
                 DataTypes.BYTES(),
+                DataTypes.STRING(),
                 DataTypes.STRING());
     }
 
@@ -178,9 +180,13 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
                 snapshotLease.pinBuilding(snapshotToPin);
             }
             leaseInitialized = true;
-            Snapshot snapshot =
-                    latestSnapshotId == null ? null : snapshotManager.snapshot(latestSnapshotId);
-            String snapshotUuid = snapshot == null ? null : snapshot.uuid();
+            SnapshotFile snapshotFile =
+                    latestSnapshotId == null
+                            ? null
+                            : GlobalIndexQueryServiceUtils.readSnapshotWithIdentity(
+                                    table, latestSnapshotId);
+            Snapshot snapshot = snapshotFile == null ? null : snapshotFile.snapshot();
+            String snapshotUuid = snapshotFile == null ? null : snapshotFile.identity();
             String currentTableUuid = table.uuid();
             String currentBranch = table.coreOptions().branch();
             if (lastSnapshotId != null
@@ -209,7 +215,8 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
                 readiness = GlobalIndexQueryServiceUtils.snapshotReadiness(table, spec, snapshot);
             }
             // Snapshot IDs normally provide the generation. If a table path is recreated or a
-            // snapshot ID is reused with another UUID, keep the request fence strictly increasing.
+            // snapshot ID is reused with different snapshot-file bytes, keep the request fence
+            // strictly increasing.
             long generation =
                     lastGeneration == null
                             ? readiness.snapshotId()
@@ -227,13 +234,22 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
                             NOT_READY,
                             target,
                             null,
-                            readiness.reason());
+                            readiness.reason(),
+                            snapshotUuid);
                 }
             } else {
                 List<Split> splits = planSnapshot(snapshot);
                 List<List<Split>> assignments = assignSplits(splits, numBootstraps);
                 for (int target = 0; target < numBootstraps; target++) {
-                    emit(output, generation, readiness.snapshotId(), START, target, null, "");
+                    emit(
+                            output,
+                            generation,
+                            readiness.snapshotId(),
+                            START,
+                            target,
+                            null,
+                            "",
+                            snapshotUuid);
                 }
                 for (int target = 0; target < numBootstraps; target++) {
                     for (Split split : assignments.get(target)) {
@@ -244,11 +260,20 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
                                 SPLIT,
                                 target,
                                 SplitSerializer.serialize(split),
-                                "");
+                                "",
+                                snapshotUuid);
                     }
                 }
                 for (int target = 0; target < numBootstraps; target++) {
-                    emit(output, generation, readiness.snapshotId(), COMPLETE, target, null, "");
+                    emit(
+                            output,
+                            generation,
+                            readiness.snapshotId(),
+                            COMPLETE,
+                            target,
+                            null,
+                            "",
+                            snapshotUuid);
                 }
             }
             lastSnapshotId = snapshotId;
@@ -314,9 +339,8 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
                         .read();
         Preconditions.checkState(
                 Objects.equals(plan.snapshotId(), snapshot.id()),
-                "Expected bootstrap snapshot %s (%s) but planned snapshot %s.",
+                "Expected bootstrap snapshot %s but planned snapshot %s.",
                 snapshot.id(),
-                snapshot.uuid(),
                 plan.snapshotId());
         return plan.splits();
     }
@@ -477,7 +501,8 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
             int type,
             int target,
             @Nullable byte[] split,
-            String reason) {
+            String reason,
+            @Nullable String snapshotIdentity) {
         output.collect(
                 GenericRow.of(
                         generation,
@@ -485,7 +510,10 @@ public class GlobalIndexQuerySnapshotMonitor extends AbstractNonCoordinatedSourc
                         type,
                         target,
                         split,
-                        BinaryString.fromString(reason)));
+                        BinaryString.fromString(reason),
+                        snapshotIdentity == null
+                                ? null
+                                : BinaryString.fromString(snapshotIdentity)));
     }
 
     public static DataStream<InternalRow> build(
