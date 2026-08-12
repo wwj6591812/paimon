@@ -25,7 +25,7 @@ under the License.
     <parent>
         <artifactId>paimon-parent</artifactId>
         <groupId>org.apache.paimon</groupId>
-        <version>2.0-87ba5bc6-20260730-165091-SNAPSHOT</version>
+        <version>2.0-db61543e-20260812-165091-SNAPSHOT</version>
     </parent>
 
     <artifactId>paimon-docs</artifactId>
