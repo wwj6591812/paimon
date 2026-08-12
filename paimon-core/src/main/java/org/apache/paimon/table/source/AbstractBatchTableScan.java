@@ -73,8 +73,9 @@ public abstract class AbstractBatchTableScan extends AbstractDataTableScan {
         this.schemaManager = schemaManager;
         if (!schema.primaryKeys().isEmpty() && options.batchScanSkipLevel0()) {
             if (options.toConfiguration()
-                    .get(CoreOptions.BATCH_SCAN_MODE)
-                    .equals(CoreOptions.BatchScanMode.NONE)) {
+                            .get(CoreOptions.BATCH_SCAN_MODE)
+                            .equals(CoreOptions.BatchScanMode.NONE)
+                    && options.startupMode() != CoreOptions.StartupMode.LATEST_DELTA) {
                 snapshotReader.withLevelFilter(level -> level > 0).enableValueFilter();
             }
         }
