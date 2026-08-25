@@ -25,6 +25,7 @@ import org.apache.paimon.utils.SnapshotManager;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.UUID;
 
 import static org.apache.paimon.catalog.Identifier.DEFAULT_MAIN_BRANCH;
@@ -95,6 +96,92 @@ public class SnapshotTest {
         Changelog changelog = new Changelog(snapshot);
         assertThat(changelog.writerVersion()).isEqualTo(snapshot.writerVersion());
         assertThat(Changelog.fromJson(changelog.toJson())).isEqualTo(changelog);
+    }
+
+    @Test
+    public void testLegacySnapshotConstructors() {
+        Snapshot snapshotWithoutVersionAndUuid =
+                new Snapshot(
+                        1L,
+                        2L,
+                        "base-manifest-list",
+                        3L,
+                        "delta-manifest-list",
+                        4L,
+                        "changelog-manifest-list",
+                        5L,
+                        "index-manifest",
+                        "commit-user",
+                        6L,
+                        Snapshot.CommitKind.APPEND,
+                        7L,
+                        8L,
+                        9L,
+                        10L,
+                        11L,
+                        "statistics",
+                        Collections.singletonMap("key", "value"),
+                        12L,
+                        Snapshot.Operation.MERGE);
+        assertLegacySnapshotFields(snapshotWithoutVersionAndUuid);
+        assertThat(snapshotWithoutVersionAndUuid.version()).isEqualTo(Snapshot.CURRENT_VERSION);
+        assertThat(snapshotWithoutVersionAndUuid.uuid()).isNotNull();
+
+        Snapshot snapshotWithVersionAndUuid =
+                new Snapshot(
+                        2,
+                        "snapshot-uuid",
+                        1L,
+                        2L,
+                        "base-manifest-list",
+                        3L,
+                        "delta-manifest-list",
+                        4L,
+                        "changelog-manifest-list",
+                        5L,
+                        "index-manifest",
+                        "commit-user",
+                        6L,
+                        Snapshot.CommitKind.APPEND,
+                        7L,
+                        8L,
+                        9L,
+                        10L,
+                        11L,
+                        "statistics",
+                        Collections.singletonMap("key", "value"),
+                        12L,
+                        Snapshot.Operation.MERGE);
+        assertLegacySnapshotFields(snapshotWithVersionAndUuid);
+        assertThat(snapshotWithVersionAndUuid.version()).isEqualTo(2);
+        assertThat(snapshotWithVersionAndUuid.uuid()).isEqualTo("snapshot-uuid");
+    }
+
+    private static void assertLegacySnapshotFields(Snapshot snapshot) {
+        assertThat(snapshot.id()).isEqualTo(1L);
+        assertThat(snapshot.schemaId()).isEqualTo(2L);
+        assertThat(snapshot.baseManifestList()).isEqualTo("base-manifest-list");
+        assertThat(snapshot.baseManifestListSize()).isEqualTo(3L);
+        assertThat(snapshot.deltaManifestList()).isEqualTo("delta-manifest-list");
+        assertThat(snapshot.deltaManifestListSize()).isEqualTo(4L);
+        assertThat(snapshot.changelogManifestList()).isEqualTo("changelog-manifest-list");
+        assertThat(snapshot.changelogManifestListSize()).isEqualTo(5L);
+        assertThat(snapshot.indexManifest()).isEqualTo("index-manifest");
+        assertThat(snapshot.commitUser()).isEqualTo("commit-user");
+        assertThat(snapshot.writerVersion()).isNull();
+        assertThat(snapshot.commitIdentifier()).isEqualTo(6L);
+        assertThat(snapshot.commitKind()).isEqualTo(Snapshot.CommitKind.APPEND);
+        assertThat(snapshot.timeMillis()).isEqualTo(7L);
+        assertThat(snapshot.totalRecordCount()).isEqualTo(8L);
+        assertThat(snapshot.deltaRecordCount()).isEqualTo(9L);
+        assertThat(snapshot.changelogRecordCount()).isEqualTo(10L);
+        assertThat(snapshot.watermark()).isEqualTo(11L);
+        assertThat(snapshot.statistics()).isEqualTo("statistics");
+        assertThat(snapshot.properties())
+                .containsExactlyEntriesOf(Collections.singletonMap("key", "value"));
+        assertThat(snapshot.nextRowId()).isEqualTo(12L);
+        assertThat(snapshot.operation()).isEqualTo(Snapshot.Operation.MERGE);
+        assertThat(Snapshot.fromJson(snapshot.toJson())).isEqualTo(snapshot);
     }
 
     @Test
