@@ -331,6 +331,62 @@ Lookup metrics are available for local partial lookup. They are reported at look
     </tbody>
 </table>
 
+### Blob Payload Transfer Metrics
+
+Raw, array and map BLOB writers report the counters below in the `blobTransfer` group.
+The scope adds the bounded variables `sourceType`, `readerIdc`, `sourceIdc` and `crossIdc`
+after the table variable. Each writer keeps at most eight source groups. No URI, object
+path, query string, credential or arbitrary hostname becomes a metric label.
+
+| Counter | Meaning |
+| --- | --- |
+| `blobTransferReadBytes` | Payload bytes returned by source reads, including partial attempts that later fail. |
+| `blobTransferWrittenBytes` | Payload bytes passed to destination writes that return successfully, including partial attempts. |
+| `blobTransferDurationNanos` | Sum of elapsed nanoseconds from obtaining a BLOB through opening and copying its payload, for completed and failed attempts. |
+| `blobTransferCompleted` | Payload copies that complete, before file framing, descriptor callbacks, flush and snapshot commit. |
+| `blobTransferFailed` | Attempts that fail while obtaining/opening the source or copying/closing its payload. |
+
+The same group reports `blobTransferLatencyMillis`, a histogram of completed and failed
+attempts in milliseconds with a fixed 1024-sample window per source group. A reporter
+can expose its mean and per-writer quantiles directly. A mean of per-writer quantiles
+is not the global quantile; retain per-writer series or clearly label a maximum.
+
+User NULLs, placeholders and prechecked missing files do not attempt a payload copy and
+are excluded. Specialized video range-copy paths retain their existing metrics.
+Bytes exclude file framing, checksums, HTTP headers, lower-layer retries and transport
+overhead. A failed write may have changed the destination before throwing; its unknown
+partial bytes are not claimed as successfully written. These are application payload
+metrics, not physical network bandwidth or committed snapshot size.
+
+`sourceType` describes the original logical source: `alake`, `oss`, `filesystem`,
+`inline`, `http_other` or `unknown`. The known image-origin service path is classified
+as `image_space`; `alicdn.com` and `taobaocdn.com` domains (including their subdomains)
+are classified as `cdn`. A CDN class identifies the requested URL domain, not the
+underlying image owner, public/private network, redirected host or actual serving IDC.
+
+IDC attribution requires independently verified placement metadata. Set the optional
+`blob-transfer.reader-idc` to the worker's canonical IDC, and
+`blob-transfer.source-idcs` to a map such as `image_space:ea120,oss:na61` **only** when
+the deployment or service owner has verified that all endpoints in each configured
+source class use that IDC. These are illustrative values, not defaults. Omit distributed
+CDNs, load balancers with unknown placement and heterogeneous source classes. A job
+spanning worker IDCs must receive worker-specific placement; a single unverified job
+setting is insufficient. No values affect routing or storage.
+
+When both endpoints are known, `crossIdc` is `same` or `cross`; otherwise it is
+`unknown`. Empty, malformed or unsafe placement falls back to `unknown`. IDC labels
+accept only 1–64 ASCII letters, digits, underscores or hyphens and normalize case.
+`unknown` and `inline` source classes cannot be configured as known remote placement.
+The default preserves existing writes and does not claim any known cross-IDC traffic.
+
+For B/s and copies/s, compute reset-aware nonnegative rates **per writer series before
+aggregation**. Deriving a sum first can hide a reset in one writer behind an increase
+in another. Mean elapsed milliseconds is the sum of duration counter increases divided
+by completed-plus-failed counter increases, then divided by 1,000,000. It includes
+source open, read, destination write and source close time; it is not an isolated HTTP
+server latency. Verify the actual reporter path and tags after deploying the updated
+JAR before enabling a production dashboard query.
+
 ### Compaction Metrics
 
 <table class="table table-bordered">

@@ -43,4 +43,16 @@ public interface BlobFetchMetricReporter {
     void recordFetchFailureNullWritten(Throwable throwable);
 
     void recordFetchFailure(Throwable throwable);
+
+    /**
+     * Reports one payload transfer attempt. Byte counts exclude framing, checksums, retries and
+     * protocol overhead. A completed copy does not imply a committed Paimon snapshot. Source is a
+     * bounded logical class, never a URI; topology is unknown without independent placement data.
+     */
+    default void recordTransfer(
+            String sourceType,
+            long readBytes,
+            long writtenBytes,
+            long durationNanos,
+            boolean completed) {}
 }

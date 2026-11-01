@@ -2735,6 +2735,25 @@ public class CoreOptions implements Serializable {
                                     + "HTTP 404 is handled by 'blob-write-null-on-missing-file'. "
                                     + "When false, the write fails when the descriptor is read.");
 
+    public static final ConfigOption<String> BLOB_TRANSFER_READER_IDC =
+            key("blob-transfer.reader-idc")
+                    .stringType()
+                    .defaultValue("")
+                    .withDescription(
+                            "Verified canonical IDC of the blob reader, used only for monitoring. "
+                                    + "Leave empty when worker placement is not known.");
+
+    public static final ConfigOption<Map<String, String>> BLOB_TRANSFER_SOURCE_IDCS =
+            key("blob-transfer.source-idcs")
+                    .mapType()
+                    .defaultValue(new HashMap<>())
+                    .withDescription(
+                            "Verified canonical IDC for each bounded blob source class, for example "
+                                    + "'oss:na61,image_space:ea120'. Set a mapping only when all "
+                                    + "endpoints in that class have independently verified placement. "
+                                    + "Omit distributed CDNs and services with unknown placement. "
+                                    + "These monitoring values never affect routing or storage.");
+
     public static final ConfigOption<Boolean> COMMIT_DISCARD_DUPLICATE_FILES =
             key("commit.discard-duplicate-files")
                     .booleanType()
@@ -4467,6 +4486,19 @@ public class CoreOptions implements Serializable {
 
     public boolean blobWriteNullOnFetchFailure() {
         return options.get(BLOB_WRITE_NULL_ON_FETCH_FAILURE);
+    }
+
+    public String blobTransferReaderIdc() {
+        return options.get(BLOB_TRANSFER_READER_IDC);
+    }
+
+    public Map<String, String> blobTransferSourceIdcs() {
+        try {
+            return options.get(BLOB_TRANSFER_SOURCE_IDCS);
+        } catch (IllegalArgumentException ignored) {
+            // Optional monitoring metadata must not reject an otherwise valid write.
+            return Collections.emptyMap();
+        }
     }
 
     public boolean postponeBatchWriteFixedBucket() {

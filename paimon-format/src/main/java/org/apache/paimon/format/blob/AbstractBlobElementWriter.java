@@ -23,6 +23,7 @@ import org.apache.paimon.data.BlobConsumer;
 import org.apache.paimon.data.BlobDescriptor;
 import org.apache.paimon.data.BlobFetchMetricReporter;
 import org.apache.paimon.data.BlobRef;
+import org.apache.paimon.data.BlobTransferSource;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.ReusingBlobRefStreamProvider;
 import org.apache.paimon.fs.Path;
@@ -60,6 +61,10 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
     private final ReusingBlobRefStreamProvider reuseSource;
 
     private String pathString;
+    private long transferStartNanos;
+    private long transferReadBytes;
+    private long transferWrittenBytes;
+    private String transferSource = "unknown";
 
     AbstractBlobElementWriter(
             PositionOutputStream out,
@@ -115,15 +120,22 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
     }
 
     protected final BlobFetchResult getBlob(BlobGetter getter) {
+        transferStartNanos =
+                blobFetchMetricReporter == BlobFetchMetricReporter.NOOP ? 0 : System.nanoTime();
+        transferReadBytes = 0;
+        transferWrittenBytes = 0;
+        transferSource = "unknown";
         try {
             return new BlobFetchResult(getter.get(), false);
         } catch (RuntimeException e) {
             if (shouldWriteNullOnFetchFailure(e)) {
                 logWriteNullOnFetchFailure(e, null);
                 blobFetchMetricReporter.recordFetchFailureNullWritten(e);
+                recordTransfer(false);
                 return new BlobFetchResult(null, true);
             }
             blobFetchMetricReporter.recordFetchFailure(e);
+            recordTransfer(false);
             throw e;
         }
     }
@@ -134,6 +146,9 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
      * (bounded to the descriptor); other blobs open their own stream and read until EOF.
      */
     protected final @Nullable BlobCopySource prepareBlobSource(Blob blob) throws IOException {
+        if (blobFetchMetricReporter != BlobFetchMetricReporter.NOOP) {
+            transferSource = BlobTransferSource.classify(blob);
+        }
         // Exact class only: subclasses may override newInputStream() and must not be bypassed.
         if (blob != null && blob.getClass() == BlobRef.class) {
             BlobRef ref = (BlobRef) blob;
@@ -162,6 +177,7 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
         try {
             return opener.open();
         } catch (IOException | RuntimeException e) {
+            recordTransfer(false);
             if (writeNullOnMissingFile && HttpClientUtils.isNotFoundError(e)) {
                 LOG.warn(
                         "Failed to open blob from {} (HTTP 404), writing NULL for BLOB field {}.",
@@ -187,6 +203,7 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
             try {
                 copyExactly(source.stream(), source.length());
             } catch (IOException | RuntimeException e) {
+                recordTransfer(false);
                 blobFetchMetricReporter.recordFetchFailure(e);
                 // Source is at an unknown position now; drop it so the next blob reopens.
                 reuseSource.discardQuietly();
@@ -196,14 +213,18 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
             try (SeekableInputStream stream = source.stream()) {
                 int bytesRead = stream.read(copyBuffer);
                 while (bytesRead >= 0) {
+                    transferReadBytes += bytesRead;
                     write(copyBuffer, bytesRead);
+                    transferWrittenBytes += bytesRead;
                     bytesRead = stream.read(copyBuffer);
                 }
             } catch (IOException | RuntimeException e) {
+                recordTransfer(false);
                 blobFetchMetricReporter.recordFetchFailure(e);
                 throw e;
             }
         }
+        recordTransfer(true);
         return new BlobDescriptor(pathString, blobPosition, out.getPos() - blobPosition);
     }
 
@@ -225,7 +246,9 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
                         "Source returned 0 bytes while copying BLOB payload for field "
                                 + blobFieldName);
             }
+            transferReadBytes += bytesRead;
             write(copyBuffer, bytesRead);
+            transferWrittenBytes += bytesRead;
             remaining -= bytesRead;
         }
     }
@@ -240,6 +263,18 @@ abstract class AbstractBlobElementWriter implements BlobElementSerializer.Writer
 
     protected final void recordSuccess(long length) {
         blobFetchMetricReporter.recordSuccess(length);
+    }
+
+    private void recordTransfer(boolean completed) {
+        if (blobFetchMetricReporter == BlobFetchMetricReporter.NOOP) {
+            return;
+        }
+        blobFetchMetricReporter.recordTransfer(
+                transferSource,
+                transferReadBytes,
+                transferWrittenBytes,
+                Math.max(0, System.nanoTime() - transferStartNanos),
+                completed);
     }
 
     protected final void recordPreCheckedMissingFileNull(InternalRow row) {
