@@ -18,6 +18,7 @@
 
 package org.apache.paimon.rest;
 
+import org.apache.paimon.data.BlobIngestObservations;
 import org.apache.paimon.utils.SensitiveConfigUtils;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -33,7 +34,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -70,7 +73,11 @@ public class HttpClientUtilsTest {
                     respond(exchange, 200, "abc".getBytes());
                 });
 
-        assertThat(HttpClientUtils.exists(url("/ok"))).isTrue();
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observer = observe(events)) {
+            assertThat(HttpClientUtils.exists(url("/ok"))).isTrue();
+        }
+        assertThat(events).isEmpty();
     }
 
     @Test
@@ -116,7 +123,17 @@ public class HttpClientUtilsTest {
                     respond(exchange, 404, new byte[0]);
                 });
 
-        assertThat(HttpClientUtils.exists(url("/head-404-get-ok"))).isTrue();
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observer = observe(events);
+                BlobIngestObservations.Scope blob = BlobIngestObservations.enterBlob()) {
+            assertThat(HttpClientUtils.exists(url("/head-404-get-ok"))).isTrue();
+        }
+        assertThat(events)
+                .containsExactly(
+                        "http_attempt/head_probe/1",
+                        "http_response/head_probe_404/1",
+                        "http_attempt/range_probe/1",
+                        "http_response/range_probe_206/1");
     }
 
     @Test
@@ -233,6 +250,22 @@ public class HttpClientUtilsTest {
     }
 
     @Test
+    public void testObservesFailureBeforeResponse() throws Exception {
+        registerHandler("/no-response", HttpExchange::close);
+
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observer = observe(events);
+                BlobIngestObservations.Scope blob = BlobIngestObservations.enterBlob()) {
+            assertThatThrownBy(() -> HttpClientUtils.getAsInputStream(url("/no-response")))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("HTTP request failed");
+        }
+        assertThat(events)
+                .containsExactly(
+                        "http_attempt/initial_get/1", "http_response/initial_get_no_response/1");
+    }
+
+    @Test
     public void testGetAsInputStreamDoesNotLeakConnectionsOnRepeatedNotFound() throws Exception {
         registerHandler(
                 "/missing",
@@ -302,9 +335,19 @@ public class HttpClientUtilsTest {
                     respond(exchange, 200, compressed);
                 });
 
-        try (InputStream in = HttpClientUtils.getAsInputStream(url("/encoded-only"))) {
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observer = observe(events);
+                BlobIngestObservations.Scope blob = BlobIngestObservations.enterBlob();
+                InputStream in = HttpClientUtils.getAsInputStream(url("/encoded-only"))) {
             assertThat(readAll(in)).isEqualTo(payload);
         }
+        assertThat(events)
+                .containsExactly(
+                        "http_attempt/initial_get/1",
+                        "http_response/initial_get_406/1",
+                        "http_attempt/decoded_retry/1",
+                        "http_retry/decoded_retry/1",
+                        "http_response/decoded_retry_200/1");
         assertThat(requestCount).hasValue(2);
         assertThat(firstAcceptEncoding).hasValue("identity");
         assertThat(secondAcceptEncoding.get()).contains("gzip");
@@ -362,9 +405,19 @@ public class HttpClientUtilsTest {
                     respond(exchange, 206, remaining);
                 });
 
-        try (InputStream in = HttpClientUtils.getAsInputStream(url("/truncated"))) {
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observer = observe(events);
+                BlobIngestObservations.Scope blob = BlobIngestObservations.enterBlob();
+                InputStream in = HttpClientUtils.getAsInputStream(url("/truncated"))) {
             assertThat(readAll(in)).isEqualTo(payload);
         }
+        assertThat(events)
+                .containsExactly(
+                        "http_attempt/initial_get/1",
+                        "http_response/initial_get_200/1",
+                        "http_attempt/range_resume/1",
+                        "http_retry/range_resume/1",
+                        "http_response/range_resume_206/1");
         assertThat(requestCount).hasValue(2);
         assertThat(range).hasValue("bytes=" + truncatedLength + "-");
         assertThat(ifRange).hasValue("\"image-v1\"");
@@ -620,11 +673,21 @@ public class HttpClientUtilsTest {
                     respond(exchange, 206, Arrays.copyOfRange(payload, 1023, payload.length));
                 });
 
-        try (InputStream in = HttpClientUtils.getAsInputStream(url("/wrong-content-range"))) {
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observer = observe(events);
+                BlobIngestObservations.Scope blob = BlobIngestObservations.enterBlob();
+                InputStream in = HttpClientUtils.getAsInputStream(url("/wrong-content-range"))) {
             assertThatThrownBy(() -> readAll(in))
                     .isInstanceOf(IOException.class)
                     .hasMessageContaining("resumed at byte 1023 instead of 1024");
         }
+        assertThat(events)
+                .containsExactly(
+                        "http_attempt/initial_get/1",
+                        "http_response/initial_get_200/1",
+                        "http_attempt/range_resume/1",
+                        "http_retry/range_resume/1",
+                        "http_response/range_resume_206/1");
         assertThat(requestCount).hasValue(2);
     }
 
@@ -707,7 +770,10 @@ public class HttpClientUtilsTest {
                     }
                 });
 
-        try (InputStream in = HttpClientUtils.getAsInputStream(url("/restart-status"))) {
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observer = observe(events);
+                BlobIngestObservations.Scope blob = BlobIngestObservations.enterBlob();
+                InputStream in = HttpClientUtils.getAsInputStream(url("/restart-status"))) {
             assertThatThrownBy(in::read)
                     .isInstanceOf(IOException.class)
                     .hasMessageContaining("server returned HTTP 404");
@@ -715,6 +781,13 @@ public class HttpClientUtilsTest {
                     .isInstanceOf(IOException.class)
                     .hasMessageContaining("server returned HTTP 404");
         }
+        assertThat(events)
+                .containsExactly(
+                        "http_attempt/initial_get/1",
+                        "http_response/initial_get_200/1",
+                        "http_attempt/full_replay/1",
+                        "http_retry/full_replay/1",
+                        "http_response/full_replay_404/1");
         assertThat(requestCount).hasValue(2);
     }
 
@@ -775,6 +848,11 @@ public class HttpClientUtilsTest {
         assertThatThrownBy(() -> HttpClientUtils.exists(url("/rate-limit")))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Unexpected HTTP status code: 420");
+    }
+
+    private static BlobIngestObservations.Scope observe(List<String> events) {
+        return BlobIngestObservations.observe(
+                (stage, outcome, value) -> events.add(stage + "/" + outcome + "/" + value));
     }
 
     private void registerHandler(String path, HttpHandler handler) {

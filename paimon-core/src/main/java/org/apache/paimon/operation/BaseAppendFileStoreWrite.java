@@ -81,8 +81,7 @@ public abstract class BaseAppendFileStoreWrite extends MemoryFileStoreWrite<Inte
     private final FileStorePathFactory pathFactory;
     private final FileIndexOptions fileIndexOptions;
     private final RowType rowType;
-    private final String blobTransferReaderIdc;
-    private final Map<String, String> blobTransferSourceIdcs;
+    private final boolean blobTransferMetricsEnabled;
 
     private @Nullable BlobFileContext blobContext;
     private @Nullable BlobFetchMetrics blobFetchMetrics;
@@ -121,8 +120,7 @@ public abstract class BaseAppendFileStoreWrite extends MemoryFileStoreWrite<Inte
         this.fileFormat = fileFormat(options);
         this.pathFactory = pathFactory;
         this.blobContext = BlobFileContext.create(rowType, options);
-        this.blobTransferReaderIdc = options.blobTransferReaderIdc();
-        this.blobTransferSourceIdcs = options.blobTransferSourceIdcs();
+        this.blobTransferMetricsEnabled = options.blobTransferMetricsEnabled();
         this.fileIndexOptions = options.indexColumnsOptions();
     }
 
@@ -139,11 +137,7 @@ public abstract class BaseAppendFileStoreWrite extends MemoryFileStoreWrite<Inte
         super.withMetricRegistry(metricRegistry);
         if (blobContext != null) {
             blobFetchMetrics =
-                    new BlobFetchMetrics(
-                            metricRegistry,
-                            tableName,
-                            blobTransferReaderIdc,
-                            blobTransferSourceIdcs);
+                    new BlobFetchMetrics(metricRegistry, tableName, blobTransferMetricsEnabled);
             blobContext = blobContext.withBlobFetchMetricReporter(blobFetchMetrics);
         }
         return this;

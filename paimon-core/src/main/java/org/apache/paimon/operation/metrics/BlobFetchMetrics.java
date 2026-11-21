@@ -26,11 +26,13 @@ import org.apache.paimon.metrics.Histogram;
 import org.apache.paimon.metrics.MetricGroup;
 import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.rest.HttpClientUtils;
+import org.apache.paimon.utils.ExceptionUtils;
+import org.apache.paimon.utils.IOUtils;
 
-import java.util.Collections;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
-import java.util.Locale;
+import java.util.List;
 import java.util.Map;
 
 /** Metrics to measure blob fetches during write. */
@@ -63,9 +65,11 @@ public class BlobFetchMetrics implements BlobFetchMetricReporter {
 
     private final MetricRegistry registry;
     private final String tableName;
-    private final String readerIdc;
-    private final Map<String, String> sourceIdcs;
-    private final Map<String, TransferCounters> transferGroups = new HashMap<>();
+    private final boolean transferMetricsEnabled;
+    // An enum bounds the number of dynamic groups, independently of URI or user-provided data.
+    private final Map<BlobTransferSource, TransferMetrics> transferGroups =
+            new EnumMap<>(BlobTransferSource.class);
+    private boolean closed;
 
     private final MetricGroup metricGroup;
     private final Counter totalCounter;
@@ -83,27 +87,14 @@ public class BlobFetchMetrics implements BlobFetchMetricReporter {
     private final Counter otherErrorCounter;
 
     public BlobFetchMetrics(MetricRegistry registry, String tableName) {
-        this(registry, tableName, "", Collections.emptyMap());
+        this(registry, tableName, false);
     }
 
     public BlobFetchMetrics(
-            MetricRegistry registry,
-            String tableName,
-            String readerIdc,
-            Map<String, String> sourceIdcs) {
+            MetricRegistry registry, String tableName, boolean transferMetricsEnabled) {
         this.registry = registry;
         this.tableName = tableName;
-        this.readerIdc = canonicalIdc(readerIdc);
-        this.sourceIdcs = new HashMap<>();
-        sourceIdcs.forEach(
-                (source, idc) -> {
-                    if (source != null
-                            && !source.equals("unknown")
-                            && !source.equals("inline")
-                            && source.equals(BlobTransferSource.bounded(source))) {
-                        this.sourceIdcs.put(source, canonicalIdc(idc));
-                    }
-                });
+        this.transferMetricsEnabled = transferMetricsEnabled;
         this.metricGroup = registry.createTableMetricGroup(GROUP_NAME, tableName);
         this.totalCounter = metricGroup.counter(BLOB_FETCH_TOTAL);
         this.successCounter = metricGroup.counter(BLOB_FETCH_SUCCESS);
@@ -161,51 +152,75 @@ public class BlobFetchMetrics implements BlobFetchMetricReporter {
     }
 
     @Override
-    public synchronized void recordTransfer(
-            String sourceType,
+    public boolean isTransferMetricsEnabled() {
+        return transferMetricsEnabled;
+    }
+
+    @Override
+    public void recordTransfer(
+            BlobTransferSource source,
             long readBytes,
             long writtenBytes,
             long durationNanos,
             boolean completed) {
-        String source = BlobTransferSource.bounded(sourceType);
-        TransferCounters counters = transferGroups.get(source);
-        if (counters == null) {
-            Map<String, String> variables = new LinkedHashMap<>();
-            variables.put("table", tableName);
-            variables.put("sourceType", source);
-            String sourceIdc = sourceIdcs.getOrDefault(source, "unknown");
-            variables.put("readerIdc", readerIdc);
-            variables.put("sourceIdc", sourceIdc);
-            variables.put(
-                    "crossIdc",
-                    readerIdc.equals("unknown") || sourceIdc.equals("unknown")
-                            ? "unknown"
-                            : readerIdc.equals(sourceIdc) ? "same" : "cross");
-            counters =
-                    new TransferCounters(
-                            registry.createMetricGroup(TRANSFER_GROUP_NAME, variables));
-            transferGroups.put(source, counters);
+        if (!transferMetricsEnabled) {
+            return;
         }
-        counters.readBytes.inc(Math.max(0, readBytes));
-        counters.writtenBytes.inc(Math.max(0, writtenBytes));
-        counters.durationNanos.inc(Math.max(0, durationNanos));
-        counters.latencyMillis.update(Math.max(0, durationNanos) / 1_000_000L);
-        (completed ? counters.completed : counters.failed).inc();
-    }
-
-    private static String canonicalIdc(String value) {
-        if (value == null || !value.trim().matches("[A-Za-z0-9_-]{1,64}")) {
-            return "unknown";
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            BlobTransferSource kind = source == null ? BlobTransferSource.UNKNOWN : source;
+            TransferMetrics transfer = transferGroups.get(kind);
+            if (transfer == null) {
+                Map<String, String> variables = new LinkedHashMap<>();
+                variables.put("table", tableName);
+                variables.put("sourceKind", kind.metricValue());
+                MetricGroup candidate = registry.createMetricGroup(TRANSFER_GROUP_NAME, variables);
+                try {
+                    transfer = new TransferMetrics(candidate);
+                } catch (RuntimeException | Error e) {
+                    try {
+                        candidate.close();
+                    } catch (RuntimeException | Error closeFailure) {
+                        ExceptionUtils.firstOrSuppressed(closeFailure, e);
+                    }
+                    throw e;
+                }
+                transferGroups.put(kind, transfer);
+            }
+            if (readBytes > 0) {
+                transfer.readBytes.inc(readBytes);
+            }
+            if (writtenBytes > 0) {
+                transfer.writtenBytes.inc(writtenBytes);
+            }
+            long nonNegativeDuration = Math.max(0, durationNanos);
+            if (nonNegativeDuration > 0) {
+                transfer.durationNanos.inc(nonNegativeDuration);
+            }
+            transfer.latencyMillis.update(nonNegativeDuration / 1_000_000L);
+            (completed ? transfer.completed : transfer.failed).inc();
         }
-        return value.trim().toLowerCase(Locale.ROOT);
     }
 
-    public void close() {
-        metricGroup.close();
-        transferGroups.values().forEach(counters -> counters.group.close());
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        List<AutoCloseable> closeables = new ArrayList<>();
+        closeables.add(metricGroup::close);
+        transferGroups.values().forEach(transfer -> closeables.add(transfer.group::close));
+        transferGroups.clear();
+        try {
+            IOUtils.closeAll(closeables);
+        } catch (Exception e) {
+            ExceptionUtils.rethrow(e);
+        }
     }
 
-    private static class TransferCounters {
+    private static class TransferMetrics {
         private final MetricGroup group;
         private final Counter readBytes;
         private final Counter writtenBytes;
@@ -214,7 +229,7 @@ public class BlobFetchMetrics implements BlobFetchMetricReporter {
         private final Counter completed;
         private final Counter failed;
 
-        private TransferCounters(MetricGroup group) {
+        private TransferMetrics(MetricGroup group) {
             this.group = group;
             this.readBytes = group.counter(TRANSFER_READ_BYTES);
             this.writtenBytes = group.counter(TRANSFER_WRITTEN_BYTES);

@@ -27,6 +27,7 @@ import org.apache.paimon.TestKeyValueGenerator;
 import org.apache.paimon.catalog.RenamingSnapshotCommit;
 import org.apache.paimon.catalog.SnapshotCommit;
 import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.data.BlobIngestObservations;
 import org.apache.paimon.deletionvectors.BucketedDvMaintainer;
 import org.apache.paimon.deletionvectors.DeletionVector;
 import org.apache.paimon.fs.Path;
@@ -88,6 +89,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1570,6 +1572,123 @@ public class FileStoreCommitTest {
         }
         long id = store.snapshotManager().latestSnapshot().id();
         assertThat(id).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, true"})
+    public void testBlobIngestObservesLostPublicationReceiptAndReplay(
+            boolean retry, boolean durable) throws Exception {
+        TestFileStore store = createStore(false);
+        String commitUser = "writer";
+        AtomicReference<ManifestCommittable> preparedRef = new AtomicReference<>();
+        store.commitDataImpl(
+                Collections.singletonList(gen.nextInsert("20211110", 8, 1L, null, "a")),
+                gen::getPartition,
+                value -> 0,
+                false,
+                17L,
+                null,
+                Collections.emptyList(),
+                (commit, committable) -> preparedRef.set(committable));
+        ManifestCommittable prepared = checkNotNull(preparedRef.get());
+        try (FileStoreCommit baseline = store.newCommit(commitUser, null)) {
+            baseline.ignoreEmptyCommit(false);
+            baseline.commit(new ManifestCommittable(prepared.identifier() - 1), false);
+        }
+        long oldSnapshot = store.snapshotManager().latestSnapshot().id();
+
+        SnapshotCommit delegate = new RenamingSnapshotCommit(store.snapshotManager(), Lock.empty());
+        SnapshotCommit publisher =
+                new SnapshotCommit() {
+                    @Override
+                    public boolean commit(
+                            @Nullable String baseSnapshotUuid,
+                            Snapshot snapshot,
+                            String branch,
+                            List<org.apache.paimon.partition.PartitionStatistics> statistics)
+                            throws Exception {
+                        if (durable) {
+                            assertThat(
+                                            delegate.commit(
+                                                    baseSnapshotUuid, snapshot, branch, statistics))
+                                    .isTrue();
+                        }
+                        throw new IOException("Publication response lost");
+                    }
+
+                    @Override
+                    public void close() throws Exception {
+                        delegate.close();
+                    }
+                };
+        Options options = Options.fromMap(store.options().toMap());
+        options.set(CoreOptions.COMMIT_MAX_RETRIES, retry ? 1 : 0);
+        List<String> events = new ArrayList<>();
+        try (BlobIngestObservations.Scope observations =
+                        BlobIngestObservations.observe(
+                                (stage, outcome, value) -> events.add(stage + "/" + outcome));
+                FileStoreCommitImpl commit =
+                        newCommitWithSnapshotCommit(
+                                store, commitUser, publisher, new CoreOptions(options), false)) {
+            if (retry) {
+                assertThat(commit.commit(prepared, false)).isEqualTo(1);
+                assertThat(events)
+                        .containsExactly(
+                                "commit_publish/attempt",
+                                "commit_publish/unknown",
+                                "commit_publish/reconciled",
+                                "commit/committed",
+                                "commit_elapsed_nanos/committed");
+            } else {
+                assertThatThrownBy(() -> commit.commit(prepared, false))
+                        .hasRootCauseMessage("Publication response lost");
+                assertThat(events)
+                        .containsExactly(
+                                "commit_publish/attempt",
+                                "commit_publish/unknown",
+                                "commit/unknown",
+                                "commit_elapsed_nanos/unknown");
+            }
+        }
+
+        store.snapshotManager().invalidateCache();
+        Snapshot snapshot = store.snapshotManager().latestSnapshot();
+        assertThat(snapshot.commitUser()).isEqualTo(commitUser);
+        assertThat(store.readKvsFromSnapshot(oldSnapshot)).isEmpty();
+        if (durable) {
+            assertThat(snapshot.id()).isEqualTo(oldSnapshot + 1);
+            assertThat(snapshot.commitIdentifier()).isEqualTo(prepared.identifier());
+            assertThat(store.readKvsFromSnapshot(snapshot.id()))
+                    .extracting(kv -> kv.value().getString(6).toString())
+                    .containsExactly("a");
+        } else {
+            assertThat(snapshot.id()).isEqualTo(oldSnapshot);
+            assertThat(snapshot.commitIdentifier()).isEqualTo(prepared.identifier() - 1);
+        }
+
+        events.clear();
+        try (BlobIngestObservations.Scope observations =
+                        BlobIngestObservations.observe(
+                                (stage, outcome, value) -> events.add(stage + "/" + outcome));
+                FileStoreCommit replay = store.newCommit(commitUser, null)) {
+            List<ManifestCommittable> filtered =
+                    replay.filterCommitted(Collections.singletonList(prepared));
+            if (durable) {
+                assertThat(filtered).isEmpty();
+                assertThat(events).containsExactly("commit/no_op");
+            } else {
+                assertThat(filtered).containsExactly(prepared);
+                assertThat(events).isEmpty();
+            }
+
+            events.clear();
+            replay.ignoreEmptyCommit(true);
+            assertThat(replay.commit(new ManifestCommittable(prepared.identifier() + 1), false))
+                    .isZero();
+            assertThat(events).containsExactly("commit/no_op", "commit_elapsed_nanos/no_op");
+        }
+        assertThat(store.snapshotManager().latestSnapshot().id()).isEqualTo(snapshot.id());
+        System.out.printf("IO13_COMMIT|%s|%s|%d|%d%n", retry, durable, oldSnapshot, snapshot.id());
     }
 
     @Test

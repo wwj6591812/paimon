@@ -18,6 +18,8 @@
 
 package org.apache.paimon.data;
 
+import org.apache.paimon.utils.UriReader;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,49 +27,46 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BlobTransferSourceTest {
 
     @Test
-    void classifiesOnlyRecognizedLogicalSources() {
-        assertThat(BlobTransferSource.classify(Blob.fromData(new byte[0]))).isEqualTo("inline");
-        assertThat(BlobTransferSource.classifyUri("alake://project/table/region=na61"))
-                .isEqualTo("alake");
-        assertThat(BlobTransferSource.classifyUri("oss://bucket/object")).isEqualTo("oss");
-        assertThat(BlobTransferSource.classifyUri("dfs://cluster/blob")).isEqualTo("filesystem");
-        assertThat(
-                        BlobTransferSource.classifyUri(
-                                "https://image.media-ai-acceleration.alibaba-inc.com/image/origin?app_key=test"))
-                .isEqualTo("image_space");
-        assertThat(BlobTransferSource.classifyUri("https://IMG.ALICDN.COM/x.jpg?signature=test"))
-                .isEqualTo("cdn");
-        assertThat(BlobTransferSource.classifyUri("https://img.taobaocdn.com/x.jpg"))
-                .isEqualTo("cdn");
-        assertThat(BlobTransferSource.classifyUri("https://example.com/x.jpg"))
-                .isEqualTo("http_other");
+    void classifiesStandardReaderApisWithoutOpeningAStream() {
+        assertThat(BlobTransferSource.classify(Blob.fromData(new byte[0])))
+                .isEqualTo(BlobTransferSource.INLINE);
+        assertThat(BlobTransferSource.classify(Blob.fromHttp("https://example.org/image")))
+                .isEqualTo(BlobTransferSource.HTTP);
+        assertThat(BlobTransferSource.classify(Blob.fromLocal("/not-opened/image")))
+                .isEqualTo(BlobTransferSource.FILE);
     }
 
     @Test
-    void doesNotTrustSpoofedHostsOrInvalidUris() {
-        assertThat(BlobTransferSource.classifyUri("https://img.alicdn.com.evil/x.jpg"))
-                .isEqualTo("http_other");
+    void doesNotInferSourceKindFromAUriOrInspectCredentials() {
+        Blob custom =
+                new BlobRef(
+                        uri -> {
+                            throw new AssertionError("classification must not open a stream");
+                        },
+                        new BlobDescriptor("https://example.org/image?signature=test", 0, -1));
+        assertThat(BlobTransferSource.classify(custom)).isEqualTo(BlobTransferSource.CUSTOM);
         assertThat(
-                        BlobTransferSource.classifyUri(
-                                "https://image.media-ai-acceleration.alibaba-inc.com/other"))
-                .isEqualTo("http_other");
-        for (String value :
-                new String[] {null, "", "http://", "http://bad host/image", "data:abc"}) {
-            assertThat(BlobTransferSource.classifyUri(value)).isEqualTo("unknown");
-        }
-        assertThat(BlobTransferSource.bounded("https://signed-private-url")).isEqualTo("unknown");
-        assertThat(BlobTransferSource.classify(null)).isEqualTo("unknown");
+                        BlobTransferSource.classify(
+                                new BlobRef(
+                                        UriReader.fromHttp(),
+                                        new BlobDescriptor("not a valid URI", 0, -1))))
+                .isEqualTo(BlobTransferSource.HTTP);
+        assertThat(BlobTransferSource.classify(null)).isEqualTo(BlobTransferSource.UNKNOWN);
+        assertThat(BlobTransferSource.classify(new BlobRef(null, null)))
+                .isEqualTo(BlobTransferSource.UNKNOWN);
     }
 
     @Test
     void doesNotInspectDescriptorsOfTransformingSubclasses() {
         BlobRef transformed =
-                new BlobRef(null, new BlobDescriptor("https://img.alicdn.com/image", 0, -1)) {
+                new BlobRef(null, null) {
                     @Override
                     public BlobDescriptor toDescriptor() {
-                        throw new UnsupportedOperationException("not supported by this stream");
+                        throw new UnsupportedOperationException("descriptor is not available");
                     }
                 };
-        assertThat(BlobTransferSource.classify(transformed)).isEqualTo("unknown");
+        assertThat(BlobTransferSource.classify(transformed)).isEqualTo(BlobTransferSource.UNKNOWN);
+        assertThat(BlobTransferSource.classify(new BlobData(new byte[0]) {}))
+                .isEqualTo(BlobTransferSource.UNKNOWN);
     }
 }

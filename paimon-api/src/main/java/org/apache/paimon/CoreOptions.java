@@ -2735,24 +2735,23 @@ public class CoreOptions implements Serializable {
                                     + "HTTP 404 is handled by 'blob-write-null-on-missing-file'. "
                                     + "When false, the write fails when the descriptor is read.");
 
-    public static final ConfigOption<String> BLOB_TRANSFER_READER_IDC =
-            key("blob-transfer.reader-idc")
-                    .stringType()
-                    .defaultValue("")
+    public static final ConfigOption<Boolean> BLOB_TRANSFER_METRICS_ENABLED =
+            key("blob-transfer-metrics.enabled")
+                    .booleanType()
+                    .defaultValue(false)
                     .withDescription(
-                            "Verified canonical IDC of the blob reader, used only for monitoring. "
-                                    + "Leave empty when worker placement is not known.");
+                            "Whether to collect payload byte counts and elapsed-time metrics in "
+                                    + "the blobTransfer group for instrumented BLOB append writers. "
+                                    + "Existing blobFetch metrics are unaffected. Enabling this "
+                                    + "option adds per-payload instrumentation overhead.");
 
-    public static final ConfigOption<Map<String, String>> BLOB_TRANSFER_SOURCE_IDCS =
-            key("blob-transfer.source-idcs")
-                    .mapType()
-                    .defaultValue(new HashMap<>())
+    public static final ConfigOption<Boolean> BLOB_INGEST_OBSERVATION_ENABLED =
+            key("blob-ingest-observation.enabled")
+                    .booleanType()
+                    .defaultValue(false)
                     .withDescription(
-                            "Verified canonical IDC for each bounded blob source class, for example "
-                                    + "'oss:na61,image_space:ea120'. Set a mapping only when all "
-                                    + "endpoints in that class have independently verified placement. "
-                                    + "Omit distributed CDNs and services with unknown placement. "
-                                    + "These monitoring values never affect routing or storage.");
+                            "Collect native Blob ingest observations when a metric registry is "
+                                    + "provided. Applies to data evolution writes and commits.");
 
     public static final ConfigOption<Boolean> COMMIT_DISCARD_DUPLICATE_FILES =
             key("commit.discard-duplicate-files")
@@ -4488,17 +4487,13 @@ public class CoreOptions implements Serializable {
         return options.get(BLOB_WRITE_NULL_ON_FETCH_FAILURE);
     }
 
-    public String blobTransferReaderIdc() {
-        return options.get(BLOB_TRANSFER_READER_IDC);
+    public boolean blobIngestObservationEnabled() {
+        return dataEvolutionEnabled()
+                && "true".equalsIgnoreCase(options.get(BLOB_INGEST_OBSERVATION_ENABLED.key()));
     }
 
-    public Map<String, String> blobTransferSourceIdcs() {
-        try {
-            return options.get(BLOB_TRANSFER_SOURCE_IDCS);
-        } catch (IllegalArgumentException ignored) {
-            // Optional monitoring metadata must not reject an otherwise valid write.
-            return Collections.emptyMap();
-        }
+    public boolean blobTransferMetricsEnabled() {
+        return options.get(BLOB_TRANSFER_METRICS_ENABLED);
     }
 
     public boolean postponeBatchWriteFixedBucket() {

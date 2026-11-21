@@ -30,19 +30,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class CoreOptionsTest {
 
     @Test
-    void testOptionalBlobTransferPlacementDoesNotAffectLegacyWrites() {
+    void testBlobObservationDefaultsAndInvalidOptions() {
         Options options = new Options();
         CoreOptions core = new CoreOptions(options);
-        assertThat(core.blobTransferReaderIdc()).isEmpty();
-        assertThat(core.blobTransferSourceIdcs()).isEmpty();
-        options.setString("blob-transfer.reader-idc", "na61");
-        options.setString("blob-transfer.source-idcs", "image_space:ea120,oss:na61");
-        assertThat(core.blobTransferReaderIdc()).isEqualTo("na61");
-        assertThat(core.blobTransferSourceIdcs())
-                .containsEntry("image_space", "ea120")
-                .containsEntry("oss", "na61");
-        options.setString("blob-transfer.source-idcs", "not-a-map");
-        assertThat(core.blobTransferSourceIdcs()).isEmpty();
+        assertThat(core.blobTransferMetricsEnabled()).isFalse();
+        assertThat(core.blobIngestObservationEnabled()).isFalse();
+        options.setString("data-evolution.enabled", "true");
+        options.setString("blob-ingest-observation.enabled", "not-a-boolean");
+        assertThat(core.blobIngestObservationEnabled()).isFalse();
+        options.setString("blob-ingest-observation.enabled", "true");
+        assertThat(core.blobIngestObservationEnabled()).isTrue();
+        options.setString("blob-transfer-metrics.enabled", "true");
+        assertThat(core.blobTransferMetricsEnabled()).isTrue();
     }
 
     @Test

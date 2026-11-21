@@ -22,11 +22,14 @@ import org.apache.paimon.FileStore;
 import org.apache.paimon.casting.DefaultValueRow;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.BlobConsumer;
+import org.apache.paimon.data.BlobIngestObservations;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.format.blob.BlobFileFormat;
 import org.apache.paimon.io.BundleRecords;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.memory.MemoryPoolFactory;
+import org.apache.paimon.metrics.BlobIngestMetrics;
 import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.operation.BundleFileStoreWriter;
 import org.apache.paimon.operation.FileStoreWrite;
@@ -58,6 +61,8 @@ public class TableWriteImpl<T> implements InnerTableWrite, Restorable<List<State
     private final RecordExtractor<T> recordExtractor;
     @Nullable private final RowKindGenerator rowKindGenerator;
     @Nullable private final RowKindFilter rowKindFilter;
+
+    @Nullable private BlobIngestMetrics blobIngestMetrics;
 
     private boolean batchCommitted = false;
     private RowType writeType;
@@ -166,7 +171,9 @@ public class TableWriteImpl<T> implements InnerTableWrite, Restorable<List<State
     public void writeBundle(BinaryRow partition, int bucket, BundleRecords bundle)
             throws Exception {
         if (write instanceof BundleFileStoreWriter) {
-            ((BundleFileStoreWriter) write).writeBundle(partition, bucket, bundle);
+            try (BlobIngestObservations.Scope ignored = openBlobIngestObservation()) {
+                ((BundleFileStoreWriter) write).writeBundle(partition, bucket, bundle);
+            }
         } else {
             for (InternalRow row : bundle) {
                 write(row, bucket);
@@ -204,10 +211,12 @@ public class TableWriteImpl<T> implements InnerTableWrite, Restorable<List<State
         }
         SinkRecord record = bucket == -1 ? toSinkRecord(row) : toSinkRecord(row, bucket);
         T extracted = recordExtractor.extract(record, rowKind);
-        if (totalBuckets == null) {
-            write.write(record.partition(), record.bucket(), extracted);
-        } else {
-            write.write(record.partition(), record.bucket(), totalBuckets, extracted);
+        try (BlobIngestObservations.Scope ignored = openBlobIngestObservation()) {
+            if (totalBuckets == null) {
+                write.write(record.partition(), record.bucket(), extracted);
+            } else {
+                write.write(record.partition(), record.bucket(), totalBuckets, extracted);
+            }
         }
         return record;
     }
@@ -252,7 +261,21 @@ public class TableWriteImpl<T> implements InnerTableWrite, Restorable<List<State
     @Override
     public TableWriteImpl<T> withMetricRegistry(MetricRegistry metricRegistry) {
         write.withMetricRegistry(metricRegistry);
+        if (blobIngestMetrics != null) {
+            blobIngestMetrics.withMetricRegistry(metricRegistry);
+        }
         return this;
+    }
+
+    public TableWriteImpl<T> withBlobIngestObservation(String tableName) {
+        this.blobIngestMetrics = new BlobIngestMetrics(tableName);
+        return this;
+    }
+
+    private BlobIngestObservations.Scope openBlobIngestObservation() {
+        return blobIngestMetrics == null
+                ? BlobIngestObservations.observe(null)
+                : blobIngestMetrics.open();
     }
 
     /**
@@ -269,7 +292,33 @@ public class TableWriteImpl<T> implements InnerTableWrite, Restorable<List<State
     @Override
     public List<CommitMessage> prepareCommit(boolean waitCompaction, long commitIdentifier)
             throws Exception {
-        return write.prepareCommit(waitCompaction, commitIdentifier);
+        try (BlobIngestObservations.Scope ignored = openBlobIngestObservation()) {
+            boolean observed = BlobIngestObservations.enabled();
+            long start = observed ? System.nanoTime() : 0;
+            List<CommitMessage> messages = write.prepareCommit(waitCompaction, commitIdentifier);
+            if (observed) {
+                try {
+                    long elapsed = System.nanoTime() - start;
+                    long prepared =
+                            messages.stream()
+                                    .filter(CommitMessageImpl.class::isInstance)
+                                    .map(message -> (CommitMessageImpl) message)
+                                    .flatMap(
+                                            message ->
+                                                    message.newFilesIncrement().newFiles().stream())
+                                    .filter(file -> BlobFileFormat.isBlobFile(file.fileName()))
+                                    .count();
+                    if (prepared > 0) {
+                        BlobIngestObservations.record("file_prepared", "succeeded", prepared);
+                        BlobIngestObservations.record(
+                                "file_prepared_elapsed_nanos", "succeeded", elapsed);
+                    }
+                } catch (RuntimeException ignoredObservationFailure) {
+                    // A monitoring summary cannot replace successful prepareCommit results.
+                }
+            }
+            return messages;
+        }
     }
 
     @Override
@@ -281,7 +330,13 @@ public class TableWriteImpl<T> implements InnerTableWrite, Restorable<List<State
 
     @Override
     public void close() throws Exception {
-        write.close();
+        try (BlobIngestObservations.Scope ignored = openBlobIngestObservation()) {
+            write.close();
+        } finally {
+            if (blobIngestMetrics != null) {
+                blobIngestMetrics.close();
+            }
+        }
     }
 
     @Override
